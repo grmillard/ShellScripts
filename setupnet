@@ -1,0 +1,230 @@
+#!/bin/bash
+#
+# Configures the hostname and IP parameters for eth0
+# NOTE: Must be run as root on the local machine to be setup
+
+# Make sure we're running as root
+if [ "`/usr/bin/whoami`" != "root" ]; then
+    echo "*** You must run this script as root from the local machine to be setup"
+    exit 1
+fi
+
+if [ $# -lt 1 ]; then
+    echo "Usage: setupnet <hostname>|- [dhcp|<ipaddress>[/<netbits>] [<gatewayip>]]"
+    echo "Defaults: ipaddress=from /etc/hosts, netbits=24, gatewayip=<subnet>.1"
+    echo "            If - is given as hostname, the hostname is not changed"
+    echo "            If hostname ends in \"+MAC3\", the last 3 MAC bytes are appended"
+    echo "Examples: 1) setupnet iws31"
+    echo "          2) setupnet iws31 10.0.0.31"
+    echo "          3) setupnet - 10.0.0.31"
+    echo "          4) setupnet iws32 10.0.0.32/16 10.0.0.1"
+    echo "          5) setupnet iws32 dhcp"
+    echo "          6) setupnet rnic+MAC3 dhcp"
+    exit 1
+fi
+
+macaddr=`/sbin/ifconfig eth0 | sed -n 's/.*HWaddr \([0-9a-fA-F:]\)/\1/p' | tr -d ' '`
+
+current_hostname=`/bin/hostname`
+if [ "$1" = "-" ]; then
+    hostname=$current_hostname
+else
+    NEWNAME=1
+    mac3=`echo $macaddr | sed 's/.*\([0-9a-fA-F][0-9a-fA-F]\):\([0-9a-fA-F][0-9a-fA-F]\):\([0-9a-fA-F][0-9a-fA-F]\)$/\1\2\3/'`
+    hostname=`echo $1 | sed "s/+MAC3$/$mac3/"`
+fi
+if [ "$2" = "dhcp" ]; then
+    DHCP=1
+fi
+
+###########################
+# Finds given arg in /etc/hosts
+###########################
+FindHostname()
+{
+    hostline=`grep -i -P "^[[:blank:]]*[0-9\.]+[[:blank:]]+[[:alnum:].-_ \t]*\b$1\b" \
+              /etc/hosts 2> /dev/null | sed -e 's/^[ \t]*//'`
+    if [ $? != 0 ]; then
+        hostline=
+    fi
+    return
+}
+
+###########################
+# If Static IP given,
+###########################
+if [ -z "$DHCP" ]; then
+    ipaddr=${2%%/*}
+    gateway=$3
+    
+    # If ipaddress not given, try to lookup in /etc/hosts
+    if [ -z "$2" ]; then
+        #hostline=`grep -s -w -i $hostname /etc/hosts`
+        FindHostname $hostname
+        if [ -z "$hostline" ]; then
+            echo "Hostname $hostname not found in /etc/hosts so IP address must be given"
+            exit 1
+        fi
+        ipaddr=${hostline%%[^0-9\.]*}
+    fi
+
+    # Get netbits from ipaddr if given
+    netbits=`echo $2 | cut -d'/' -s -f2`
+    if [ -z "$netbits" ]; then
+        netbits=24
+    fi
+    
+    # Look for known gateways
+    if [ -z "$gateway" ]; then
+        if [ "${ipaddr:0:11}" = "192.168.30." ]; then
+            gateway=192.168.30.5
+        elif [ "${ipaddr:0:11}" = "192.168.31." ]; then
+            gateway=192.168.31.5
+        elif [ "${ipaddr:0:11}" = "192.168.35." ]; then
+            gateway=192.168.35.2
+        elif [ "${ipaddr:0:11}" = "192.168.37." ]; then
+            gateway=192.168.37.251
+        elif [ "${ipaddr:0:11}" = "192.168.38." ]; then
+            gateway=192.168.38.251
+        elif [ "${ipaddr:0:11}" = "192.168.40." ]; then
+            gateway=192.168.40.2
+        fi
+    fi
+    
+    # Determine subnet settings
+    if [ "$netbits" = "24" ]; then
+        netmask=255.255.255.0
+        ipbase=${ipaddr%.*}
+        network=${ipbase}.0
+        broadcast=${ipbase}.255
+        if [ -z "$gateway" ]; then
+            gateway=${ipbase}.1
+        fi
+        gwbase=${gateway%.*}
+    elif [ "$netbits" = "16" ]; then
+        netmask=255.255.0.0
+        ipbase=${ipaddr%.*.*}
+        network=${ipbase}.0.0
+        broadcast=${ipbase}.255.255
+        if [ -z "$gateway" ]; then
+            gateway=${ipbase}.0.1
+        fi
+        gwbase=${gateway%.*.*}
+    else
+        echo "Sorry, only netbits of 16 and 24 are currently supported :-("
+        exit 1
+    fi
+    
+    if [ "$ipbase" != "$gwbase" ]; then
+       echo "Error: Specified gateway is not in subnet $network/$netbits"
+       exit 1
+    fi
+fi
+
+echo -n "Reading MAC address of eth0... "
+
+echo $macaddr
+
+echo -n "Stopping eth0... "
+/etc/sysconfig/network-scripts/ifdown eth0 &>/dev/null
+echo "OK"
+
+echo    "Configuring eth0 for:"
+echo    "    Hostname = $hostname"
+if [ -z "$DHCP" ]; then
+    echo    "    IP addr  = $ipaddr"
+    echo    "    Network  = $network  (netmask=$netmask)"
+    echo    "    Broadcast= $broadcast"
+    echo -n "    Gateway  = $gateway ... "
+else
+    echo -n "    IP Addr  = DHCP ... "
+fi
+
+cd /etc/sysconfig
+cp -pf network prev.network
+# Set hostname & remove gateway if present
+sed -e 's/^HOSTNAME=.*$/HOSTNAME='$hostname'/' \
+    -e '/^GATEWAY=.*$/d' \
+    -i network
+if [ -z "`/bin/grep ^HOSTNAME= network`" ]; then
+    echo "HOSTNAME=$hostname" >> network
+fi
+if [ -n "$NEWNAME" ]; then
+    hostname $hostname
+fi
+
+cd /etc/sysconfig/network-scripts
+cp -pf ifcfg-eth0 prev.ifcfg-eth0
+if [ -z "$DHCP" ]; then
+    # Replace existing fields
+    sed -e 's/^BOOTPROTO=.*$/BOOTPROTO=static/' \
+        -e 's/^HWADDR=.*$/HWADDR='$macaddr'/' \
+        -e 's/^IPADDR=.*$/IPADDR='$ipaddr'/' \
+        -e 's/^NETMASK=.*$/NETMASK='$netmask'/' \
+        -e 's/^NETWORK=.*$/NETWORK='$network'/' \
+        -e 's/^BROADCAST=.*$/BROADCAST='$broadcast'/' \
+        -e 's/^GATEWAY=.*$/GATEWAY='$gateway'/' \
+        -e '/^DHCP_HOSTNAME=.*$/d' \
+        -i ifcfg-eth0
+    # Add any non-existing fields
+    if [ -z "`/bin/grep ^HWADDR= ifcfg-eth0`" ]; then
+        echo "HWADDR=$macaddr" >> ifcfg-eth0
+    fi
+    if [ -z "`/bin/grep ^IPADDR= ifcfg-eth0`" ]; then
+        echo "IPADDR=$ipaddr" >> ifcfg-eth0
+    fi
+    if [ -z "`/bin/grep ^NETMASK= ifcfg-eth0`" ]; then
+        echo "NETMASK=$netmask" >> ifcfg-eth0
+    fi
+    if [ -z "`/bin/grep ^NETWORK= ifcfg-eth0`" ]; then
+        echo "NETWORK=$network" >> ifcfg-eth0
+    fi
+    if [ -z "`/bin/grep ^BROADCAST= ifcfg-eth0`" ]; then
+        echo "BROADCAST=$broadcast" >> ifcfg-eth0
+    fi
+    if [ -z "`/bin/grep ^GATEWAY= ifcfg-eth0`" ]; then
+        echo "GATEWAY=$gateway" >> ifcfg-eth0
+    fi
+
+    echo "OK"
+
+    # Add hostname to hosts file if not already there
+    FindHostname $hostname
+    if [ -z "$hostline" ]; then
+        echo "Adding $hostname to /etc/hosts (IP=$ipaddr)..."
+        echo >> /etc/hosts
+        echo "$ipaddr	$hostname" >> /etc/hosts
+    fi
+else
+    sed -e 's/^BOOTPROTO=.*$/BOOTPROTO=dhcp/' \
+        -e 's/^HWADDR=.*$/HWADDR='$macaddr'/' \
+        -e '/^IPADDR=.*$/d' \
+        -e '/^NETMASK=.*$/d' \
+        -e '/^NETWORK=.*$/d' \
+        -e '/^BROADCAST=.*$/d' \
+        -e '/^GATEWAY=.*$/d' \
+        -i ifcfg-eth0
+    if [ -z "`/bin/grep ^HWADDR= ifcfg-eth0`" ]; then
+        echo "HWADDR=$macaddr" >> ifcfg-eth0
+    fi
+    if [ -z "`/bin/grep ^DHCP_HOSTNAME= ifcfg-eth0`" ]; then
+        echo "DHCP_HOSTNAME=\"$hostname\"" >> ifcfg-eth0
+    fi
+
+    echo "OK"
+fi
+
+echo -n "Restarting eth0... "
+./ifup eth0
+echo "OK"
+
+if [ -n "$NEWNAME" ]; then
+    echo
+    echo "===== You should now reboot for settings to take effect ====="
+    echo
+else
+    echo
+    echo "===== Network settings have been changed successfully ====="
+    echo
+fi
+

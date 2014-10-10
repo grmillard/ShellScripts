@@ -1,0 +1,22 @@
+#!/bin/bash -x
+
+#Set the timestamp
+TIMERUN=$(date +"%F")
+
+#Use a really big hammer - make sure our source tree is present
+# run the accurev command to set the 'mark'
+# tar up the entire tree , timestamp it, and place it in /home/backup
+# change ownership of the file to user 'backup'
+
+if [  -d /work/reftrees ]; then
+        /opt/accurev/bin/accurev backup mark
+        /bin/tar -zcvf /home/backup/AccuTree.$TIMERUN.tgz /opt/storage/*
+        /bin/chown backup: /home/backup/AccuTree*
+fi
+
+#Automagically copy it to the manufacturing server in CT for safe keeping
+#/usr/bin/scp -v /home/backup/AccuTree* backup@ctmfg1:/home/backup
+
+#Delete the archive - in preparation for tomorrow's run
+#/bin/rm -rf AccuTree*
+

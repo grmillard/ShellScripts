@@ -1,0 +1,29 @@
+#!/bin/bash
+
+#Add the status user
+#useradd status
+/usr/sbin/adduser -g field -p '' -s /home/status/statuscheck  status
+#Create the script
+touch /home/status/statuscheck
+
+#Set the script name
+STATSCRIPT=/home/status/statuscheck
+
+#Cat the script into the /home/status home directory
+echo "#!/bin/bash" >> $STATSCRIPT
+echo "                            " >> $STATSCRIPT
+#echo "/sbin/ifconfig | grep 'inet addr' | awk '{print $1, $2, $3}'" >> $STATSCRIPT
+echo "/sbin/ifconfig | grep 'inet addr' | awk '{print \$1, \$2, \$3}'" >> $STATSCRIPT
+echo "cat /etc/mutualink/mutualink.cfg | grep 'OurIdent' | awk '{print \$3}'" >> $STATSCRIPT
+echo "#echo "Press any key to continue, or wait 10 seconds." " >> $STATSCRIPT
+echo "#read -n1 -t10 any_key " >> $STATSCRIPT
+echo "exit" >> $STATSCRIPT
+
+#Set the appropriate permissions/users to the file
+chown status: /home/status/statuscheck
+chmod a+x /home/status/statuscheck
+
+#Add to the /etc/inittab file for serial access
+INITTAB_FILE=/etc/inittab
+echo "#added for serial console acess" >> $INITTAB_FILE
+echo "c0:2345:respawn:/sbin/agetty ttyS0 38400" >> $INITTAB_FILE
